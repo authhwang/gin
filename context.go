@@ -333,7 +333,7 @@ func (c *Context) GetStringMapStringSlice(key string) (smss map[string][]string)
 /************************************/
 
 // Param returns the value of the URL param.
-// It is a shortcut for c.Params.ByName(key)
+// It is a shortcut for c.,..ByName(key)
 //     router.GET("/user/:id", func(c *gin.Context) {
 //         // a GET request to /user/john
 //         id := c.Param("id") // id == "john"

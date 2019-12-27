@@ -141,6 +141,8 @@ func New() *Engine {
 		secureJsonPrefix:       "while(1);",
 	}
 	engine.RouterGroup.engine = engine
+
+	//当sync.pool.Get() 返回nil时 自动调用该方法
 	engine.pool.New = func() interface{} {
 		return engine.allocateContext()
 	}
@@ -229,7 +231,9 @@ func (engine *Engine) NoMethod(handlers ...HandlerFunc) {
 // included in the handlers chain for every single request. Even 404, 405, static files...
 // For example, this is the right place for a logger or error management middleware.
 func (engine *Engine) Use(middleware ...HandlerFunc) IRoutes {
+	//添加middleware切片到RouterGroup.Handlers
 	engine.RouterGroup.Use(middleware...)
+	//针对404 405 的时候也需要更新所有全局中间件
 	engine.rebuild404Handlers()
 	engine.rebuild405Handlers()
 	return engine
@@ -378,6 +382,9 @@ func (engine *Engine) handleHTTPRequest(c *Context) {
 	httpMethod := c.Request.Method
 	rPath := c.Request.URL.Path
 	unescape := false
+	//rawPath https://m.ezbuy.sg/product/http%3A%2F%2Fcastleblack.sg%3Fid%3D153553%26_ezgpid%3D153553%26ezbuy%3Dezbuy
+
+	//URL.Path 通过go解码的/product/http://castleblack.sg?id=153553&_ezgpid=153553&ezbuy=ezbuy
 	if engine.UseRawPath && len(c.Request.URL.RawPath) > 0 {
 		rPath = c.Request.URL.RawPath
 		unescape = engine.UnescapePathValues
@@ -401,11 +408,14 @@ func (engine *Engine) handleHTTPRequest(c *Context) {
 			c.writermem.WriteHeaderNow()
 			return
 		}
+
 		if httpMethod != "CONNECT" && rPath != "/" {
+			//当发现是/foo/ 该route没有任何handler 但/foo有hanlder时 
 			if value.tsr && engine.RedirectTrailingSlash {
 				redirectTrailingSlash(c)
 				return
 			}
+			//当发现/FOO 或 /..//FOO 没有任何handler时, 先排除/../ 然后大小写切换 寻找/foo
 			if engine.RedirectFixedPath && redirectFixedPath(c, root, engine.RedirectFixedPath) {
 				return
 			}
@@ -413,6 +423,7 @@ func (engine *Engine) handleHTTPRequest(c *Context) {
 		break
 	}
 
+	//如果启用，当request没找到对应route，会寻找其他method下的path，如果有，则返回405，如果没有直接返回not found
 	if engine.HandleMethodNotAllowed {
 		for _, tree := range engine.trees {
 			if tree.method == httpMethod {

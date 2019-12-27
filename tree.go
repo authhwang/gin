@@ -5,6 +5,7 @@
 package gin
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"unicode"
@@ -64,6 +65,7 @@ func min(a, b int) int {
 
 func countParams(path string) uint8 {
 	var n uint
+	fmt.Println('1')
 	for i := 0; i < len(path); i++ {
 		if path[i] == ':' || path[i] == '*' {
 			n++
@@ -97,6 +99,7 @@ type node struct {
 }
 
 // increments priority of the given child and reorders if necessary.
+//作用： 1.给新增得child根据priority排序 2.当出现child节点有新的child 需要重新排序
 func (n *node) incrementChildPrio(pos int) int {
 	n.children[pos].priority++
 	prio := n.children[pos].priority
@@ -122,11 +125,34 @@ func (n *node) incrementChildPrio(pos int) int {
 
 // addRoute adds a node with the given handle to the path.
 // Not concurrency-safe!
+/*
+除了某些条件无法触发，基本上都跑通
+0. 先获取与root.path公有的部分
+1. 通常为第一个路由是第二个路由的静态延展时，则会选择截取余下不同的部分作为path，将其作为root的子节点进行添加处理。e.g. /user, /user/name
+2. 通常公有部分只有'/'的短路由时，则会重新组织root节点，把旧root节点作为新子节点a, 子path为旧root除'/'余下部分的path，新子节点b相同处理。e.g. /user, /info
+3. 通常先有一个长路由，后有一个短路由时，则会将旧root节点作为新子节点a，子path为旧root除相同部分外余下部分的path，新root节点为新添加节点。e.g. /user/info, /user (顺序的不同处理也不同)
+4. 通常多层递进路由，例如/user, /user/:name, /user/:name/*action, 则在进入/user/:name, 会进入otherwise部分添加两个节点(子节点a，和子子节点b) a.path = / b.path = :name
+当进入/user/:name/*action时, 因为root.indices = '/'，所以进入next bype bath部分, 对子节点a的priority++, 将node n = a, 重新run walk section。
+这时候的path = /:name/*action，n.path = / 相同部分为/, 进入 make new child section， 因为n.wildChild = true，所以需要检查是否有相同的:name部分，检查成功则 重新run walk section
+这时候的path = :name/*action, n.path = :name， 截取余下不同部分/*action， 进入otherwise insert section，b.indices += '/'，添加子子子节点c,子子子子节点d, 子子子子子节点e, c.path="" c.indice=/ , d.path="", e.path="/*action"
+
+/user/:name, /user/info 不允许同时出现，因为有了通配符路由不允许相同部分静态路由
+
+有indices的改变通常都是由连续两个节点生成时
+
+bug:
+/user, /user/:name, /user/:name/*action, /user/:name/*action/*bug 这种情况下会出现最后一个路由没有拦截成功，因为在调用addRoute检查是否含有更长通配符时不严密， 所以通过条件检查。
+/user, /user/:name, /user/:name/*action/ 只有这样才能在条件检查下找到，因为不允许*action节点后面含有/
+
+
+*/
 func (n *node) addRoute(path string, handlers HandlersChain) {
 	fullPath := path
 	n.priority++
+	//累计有多少个路由参数 例如/user/:name/*action,其中:name是require，*action是optional
 	numParams := countParams(path)
-
+	//&{  [] [] %!s(uint32=1) %!s(gin.nodeType=0) %!s(uint8=0) %!s(bool=false)}
+	// &{/user/  [%!s(*gin.node=&{:name  [] [0x98b1b0 0x98be60 0x98dd00] 1 2 1 false})] [] %!s(uint32=2) %!s(gin.nodeType=1) %!s(uint8=0) %!s(bool=true)}
 	parentFullPathIndex := 0
 
 	// non-empty tree
@@ -180,8 +206,11 @@ func (n *node) addRoute(path string, handlers HandlersChain) {
 				path = path[i:]
 
 				if n.wildChild {
+					//代表有一个通配符子节点，不允许同时拥有多个通配符子节点或者静态节点
 					parentFullPathIndex += len(n.path)
 					n = n.children[0]
+					//TODO: 针对相同顺序路由节点增加priority是有必要，若不是时候捏？
+					//answer: 不是相同的 会panic
 					n.priority++
 
 					// Update maxParams of the child node
@@ -191,6 +220,11 @@ func (n *node) addRoute(path string, handlers HandlersChain) {
 					numParams--
 
 					// Check if the wildcard matches
+					//通配符在相同的前缀下只能有一个 /user/:name /user/:info /user/action不能共存
+					//只允许相同前缀的路由扩展新的后代节点 /user/:name /user/:name/*action
+					//检查通配符时会导致因/user/:name/*action, /user/:name/*action/*bug这种情况导致增加*action
+
+					//2019.12.23 发现是逻辑问题，应该是项目开始至今都没觉得这样会有问题
 					if len(path) >= len(n.path) && n.path == path[:len(n.path)] {
 						// check for longer wildcard, e.g. :name and :names
 						if len(n.path) >= len(path) || path[len(n.path)] == '/' {
@@ -213,6 +247,7 @@ func (n *node) addRoute(path string, handlers HandlersChain) {
 				c := path[0]
 
 				// slash after param
+				// 作用父节点是param 子节点的path = ''的节点处理
 				if n.nType == param && c == '/' && len(n.children) == 1 {
 					parentFullPathIndex += len(n.path)
 					n = n.children[0]
@@ -259,6 +294,11 @@ func (n *node) addRoute(path string, handlers HandlersChain) {
 	}
 }
 
+// 如果是/user 则root.path = /user
+// 如果是/user/:name 则root节点的path = /user/, 其child是通配符节点b，b.path = :name
+// 如果是/user/:name/action 则root节点的path = /user/, 其child是通配符节点b，b.path = :name/action
+// 如果是/user/:name/*action 则root.path = /user/, 其child是通配符节点b，b.path = :name, b.child是catchall节点c, c.path='', c.child是catchall节点d, d.path=/*action
+// // 如果是/user/:name/info/*action 则root.path = /user/, 其child是通配符节点b，b.path = :name, b.child是catchall节点c, c.path='/info', c.child是catchall节点d, d.path=/*action
 func (n *node) insertChild(numParams uint8, path string, fullPath string, handlers HandlersChain) {
 	var offset int // already handled bytes of the path
 
@@ -270,6 +310,7 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 		}
 
 		// find wildcard end (either '/' or path end)
+		//获取通配符结尾的index（包括'/'）
 		end := i + 1
 		for end < max && path[end] != '/' {
 			switch path[end] {
@@ -284,12 +325,14 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 
 		// check if this Node existing children which would be
 		// unreachable if we insert the wildcard here
+		// 跟上述的一样: 只能拥有一个通配符子节点，不允许同时拥有多个通配符子节点或者静态节点
 		if len(n.children) > 0 {
 			panic("wildcard route '" + path[i:end] +
 				"' conflicts with existing children in path '" + fullPath + "'")
 		}
 
 		// check if the wildcard has a name
+		//*a/ 包括/或者结束index
 		if end-i < 2 {
 			panic("wildcards must be named with a non-empty name in path '" + fullPath + "'")
 		}
@@ -315,6 +358,7 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 			// if the path doesn't end with the wildcard, then there
 			// will be another non-wildcard subpath starting with '/'
 			if end < max {
+				//结尾不包含 '/'
 				n.path = path[offset:end]
 				offset = end
 
@@ -328,6 +372,7 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 			}
 
 		} else { // catchAll
+			//推测 *通配符只能适用于路由的最后一位 不存在/user/:name/*action/:when
 			if end != max || numParams > 1 {
 				panic("catch-all routes are only allowed at the end of the path in path '" + fullPath + "'")
 			}
@@ -338,11 +383,13 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 
 			// currently fixed width 1 for '/'
 			i--
+			//检查通配符的前一位是否被'/'分隔
 			if path[i] != '/' {
 				panic("no / before catch-all in path '" + fullPath + "'")
 			}
 
 			n.path = path[offset:i]
+			//会用双重node拦截，第一种情况当出现*action为空时，则以*前和:通配符后面之间的作为静态路由拦截 e.g. /user/:name/info/*action时就是/info，则用第一个node拦截，若不是.则用第二个node拦截
 
 			// first node: catchAll node with empty path
 			child := &node{
@@ -372,6 +419,7 @@ func (n *node) insertChild(numParams uint8, path string, fullPath string, handle
 	}
 
 	// insert remaining path part and handle to the leaf
+	// 对上个节点把剩下的路径补充
 	n.path = path[offset:]
 	n.handlers = handlers
 	n.fullPath = fullPath
@@ -390,11 +438,21 @@ type nodeValue struct {
 // If no handle can be found, a TSR (trailing slash redirect) recommendation is
 // made if a handle exists with an extra (without the) trailing slash for the
 // given path.
+
+//先检查路由长度与当前长度:
+//若比n.path长，且与n.path相同，若是，则判断是否有通配符子节点，若无，则继续寻找余下子节点索引是否有跟当前path相同，有则代表有后面的子节点对应 重跑walk；
+//若有通配符节点params，则先获取第一个子节点并指向n，获取对应的key和value，放入params，如果该路由还有后续内容，则继续往下走，若无，则检查n是否有handler register ，有register，就返回甘节点，没有注册，则寻找其子节点看看能不能做重定向
+//若有通配符节点catchall，则先获取第一个子节点，获取对应的key和value，不检查是否有hanlder的情况下直接返回该节点
+
+//若比n.path长，但没有与n.path相同, 则检查path是否等于 / 或者 e.g. n.path = /name/b && path = /name && n.handler != nil 若其中一个条件符合，则重定向
+
+//若与n.path相同，若n.handler ！= nil，返回该节点，若条件a(暂时不理解是什么情况下)符合，则重定向，若条件b(根据索引，寻找余下子节点，若有与path相同，则重定向)
 func (n *node) getValue(path string, po Params, unescape bool) (value nodeValue) {
 	value.params = po
 walk: // Outer loop for walking the tree
 	for {
 		if len(path) > len(n.path) {
+			// 针对/user /user/ , /user /user/name
 			if path[:len(n.path)] == n.path {
 				path = path[len(n.path):]
 				// If this node does not have a wildcard (param or catchAll)
@@ -431,6 +489,7 @@ walk: // Outer loop for walking the tree
 						value.params = make(Params, 0, n.maxParams)
 					}
 					i := len(value.params)
+					//将路由参数传进params
 					value.params = value.params[:i+1] // expand slice within preallocated capacity
 					value.params[i].Key = n.path[1:]
 					val := path[:end]
@@ -444,6 +503,7 @@ walk: // Outer loop for walking the tree
 					}
 
 					// we need to go deeper!
+					//如果在end 小于 path
 					if end < len(path) {
 						if len(n.children) > 0 {
 							path = path[end:]
@@ -456,13 +516,17 @@ walk: // Outer loop for walking the tree
 						return
 					}
 
+					//当前节点n 有 handlers时
 					if value.handlers = n.handlers; value.handlers != nil {
 						value.fullPath = n.fullPath
 						return
 					}
+					//如果符合当前节点路由，但他没有注册任何handlers时
 					if len(n.children) == 1 {
 						// No handle found. Check if a handle for this path + a
 						// trailing slash exists for TSR recommendation
+
+						//那就将当前路由加'/'，并看它有没有handlers
 						n = n.children[0]
 						value.tsr = n.path == "/" && n.handlers != nil
 					}
@@ -476,6 +540,7 @@ walk: // Outer loop for walking the tree
 					}
 					i := len(value.params)
 					value.params = value.params[:i+1] // expand slice within preallocated capacity
+					//在添加catchall的节点path 一定是以/开头
 					value.params[i].Key = n.path[2:]
 					if unescape {
 						var err error
@@ -497,6 +562,8 @@ walk: // Outer loop for walking the tree
 		} else if path == n.path {
 			// We should have reached the node containing the handle.
 			// Check if this node has a handle registered.
+
+			//path与root.path相同，而且root path 有handler
 			if value.handlers = n.handlers; value.handlers != nil {
 				value.fullPath = n.fullPath
 				return

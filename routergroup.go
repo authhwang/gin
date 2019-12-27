@@ -55,6 +55,31 @@ func (group *RouterGroup) Use(middleware ...HandlerFunc) IRoutes {
 
 // Group creates a new router group. You should add all the routes that have common middlewares or the same path prefix.
 // For example, all the routes that use a common middleware for authorization could be grouped.
+
+// Group的作用是先定义basePath和handlers(和root router group组合)，当这个group去包含其他路由时就会融合basePath组成新的absolutePath和handler,再注册到engine
+/*
+func main() {
+	router := gin.Default()
+
+	// Simple group: v1
+	v1 := router.Group("/v1")
+	{
+		v1.POST("/login", loginEndpoint)
+		v1.POST("/submit", submitEndpoint)
+		v1.POST("/read", readEndpoint)
+	}
+
+	// Simple group: v2
+	v2 := router.Group("/v2")
+	{
+		v2.POST("/login", loginEndpoint)
+		v2.POST("/submit", submitEndpoint)
+		v2.POST("/read", readEndpoint)
+	}
+
+	router.Run(":8080")
+}
+*/
 func (group *RouterGroup) Group(relativePath string, handlers ...HandlerFunc) *RouterGroup {
 	return &RouterGroup{
 		Handlers: group.combineHandlers(handlers),
@@ -211,6 +236,7 @@ func (group *RouterGroup) combineHandlers(handlers HandlersChain) HandlersChain 
 		panic("too many handlers")
 	}
 	mergedHandlers := make(HandlersChain, finalSize)
+	
 	copy(mergedHandlers, group.Handlers)
 	copy(mergedHandlers[len(group.Handlers):], handlers)
 	return mergedHandlers

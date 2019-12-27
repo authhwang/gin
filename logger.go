@@ -60,7 +60,7 @@ type LogFormatterParams struct {
 	TimeStamp time.Time
 	// StatusCode is HTTP response code.
 	StatusCode int
-	// Latency is how much time the server cost to process a certain request.
+	// Latency is how much time the server cost to process a certain requesst.
 	Latency time.Duration
 	// ClientIP equals Context's ClientIP method.
 	ClientIP string

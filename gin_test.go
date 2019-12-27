@@ -478,7 +478,7 @@ func TestListOfRoutes(t *testing.T) {
 	})
 }
 
-func TestEngineHandleContext(t *testing.T) {
+func TestEnggineHandleContext(t *testing.T) {
 	r := New()
 	r.GET("/", func(c *Context) {
 		c.Request.URL.Path = "/v2"
